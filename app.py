@@ -6,10 +6,9 @@ import torch
 from PIL import Image
 from facenet_pytorch import MTCNN, InceptionResnetV1
 import platform
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase, RTCConfiguration
-import av
 import tempfile
 import numpy as np
+import time
 
 class FaceRecognitionSystem:
     def __init__(self, caracteristicas_dict=None):
@@ -178,70 +177,63 @@ class FaceRecognitionSystem:
         
         return frame
 
-class VideoProcessor(VideoProcessorBase):
-    def __init__(self, face_system):
-        self.face_system = face_system
-        self.frame_count = 0
-        self.last_frame = None
-        self.last_results = None
-    
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        self.last_frame = img.copy()
-        
-        # Procesar cada 15 frames para mejorar rendimiento
-        if self.frame_count % 15 == 0:
-            try:
-                self.last_results = self.face_system.recognize_faces_in_frame(img)
-            except Exception as e:
-                print(f"Error en reconocimiento: {e}")
-        
-        # Dibujar resultados si están disponibles
-        if self.last_results:
-            img = self.face_system.draw_face_info(img, self.last_results)
-        
-        self.frame_count += 1
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+    def process_image_for_recognition(self, image):
+        """Procesar imagen subida para reconocimiento"""
+        try:
+            # Convertir imagen PIL a array numpy
+            if isinstance(image, Image.Image):
+                image_array = np.array(image)
+            else:
+                image_array = image
+            
+            # Asegurar formato BGR para OpenCV
+            if len(image_array.shape) == 3 and image_array.shape[2] == 3:
+                # Si es RGB, convertir a BGR
+                image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+            else:
+                image_bgr = image_array
+            
+            # Reconocer rostros
+            faces_info = self.recognize_faces_in_frame(image_bgr)
+            
+            # Dibujar información en la imagen
+            result_image = self.draw_face_info(image_bgr.copy(), faces_info)
+            
+            # Convertir de BGR a RGB para mostrar en Streamlit
+            result_image_rgb = cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB)
+            
+            return result_image_rgb, faces_info
+            
+        except Exception as e:
+            st.error(f"Error procesando imagen: {str(e)}")
+            return None, []
 
-# Función para obtener configuración RTC mejorada
-def get_rtc_config_free():
-    """Configuración con servidores gratuitos más estables"""
-    return RTCConfiguration({
-        "iceServers": [
-            # Servidores STUN gratuitos más confiables
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {"urls": ["stun:stun1.l.google.com:19302"]},
-            {"urls": ["stun:stun2.l.google.com:19302"]},
-            {"urls": ["stun:stun3.l.google.com:19302"]},
-            {"urls": ["stun:stun4.l.google.com:19302"]},
-            {"urls": ["stun:openrelay.metered.ca:80"]},
-            {"urls": ["stun:relay.metered.ca:80"]},
-            # Agregar servidores TURN gratuitos (limitados)
-            {
-                "urls": ["turn:openrelay.metered.ca:80"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject"
-            },
-            {
-                "urls": ["turn:openrelay.metered.ca:443"],
-                "username": "openrelayproject", 
-                "credential": "openrelayproject"
-            },
-            {
-                "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
-                "username": "openrelayproject",
-                "credential": "openrelayproject"
-            }
-        ],
-        "iceTransportPolicy": "all",
-        "bundlePolicy": "balanced",
-        "rtcpMuxPolicy": "require",
-        "iceCandidatePoolSize": 10
-    })
+
+def capture_camera_frame():
+    """Capturar un frame de la cámara usando OpenCV"""
+    try:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            return None, "No se pudo acceder a la cámara"
+        
+        # Configurar resolución
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        
+        ret, frame = cap.read()
+        cap.release()
+        
+        if ret:
+            return frame, None
+        else:
+            return None, "No se pudo capturar el frame"
+    except Exception as e:
+        return None, f"Error capturando frame: {str(e)}"
+
 
 def main():
     st.set_page_config(
-        page_title="Reconocimiento Facial en Tiempo Real",
+        page_title="Reconocimiento Facial",
         page_icon="🎥",
         layout="wide"
     )
@@ -251,7 +243,7 @@ def main():
         st.session_state.face_system = FaceRecognitionSystem()
         st.session_state.dict_loaded = False
         st.session_state.last_uploaded = None
-        st.session_state.camera_active = False
+        st.session_state.camera_mode = "upload"  # "upload" o "camera"
 
     # Elementos estáticos
     st.title("🎥 Sistema de Reconocimiento Facial")
@@ -314,91 +306,166 @@ def main():
         
         st.write(f"**Personas totales:** {len(st.session_state.face_system.caracteristicas)}")
     
-    # Área principal
-    st.subheader("📷 Cámara en Tiempo Real")
-    
-    # Mostrar advertencia para entornos desplegados
-    if not is_local:
-        st.warning("""
-        ⚠️ **Nota importante para aplicaciones desplegadas:**
-        - La funcionalidad de cámara puede tener limitaciones en algunos servicios de hosting
-        - Se requiere HTTPS para acceder a la cámara
-        - Algunos navegadores pueden bloquear el acceso a la cámara en sitios desplegados
-        - Si tienes problemas, prueba con diferentes navegadores o en modo local
-        """)
-    
     # Solo mostrar si hay diccionario cargado
     if st.session_state.face_system.caracteristicas:
-        try:
-            # Creamos una instancia de VideoProcessor con el sistema facial
-            video_processor = VideoProcessor(st.session_state.face_system)
+        # Selector de modo
+        st.subheader("📷 Modo de Captura")
+        
+        mode_col1, mode_col2 = st.columns(2)
+        with mode_col1:
+            upload_mode = st.button("📁 Subir Imagen", use_container_width=True)
+        with mode_col2:
+            camera_mode = st.button("📸 Usar Cámara", use_container_width=True, 
+                                  disabled=not is_local,
+                                  help="Solo disponible en entorno local" if not is_local else "")
+        
+        if upload_mode:
+            st.session_state.camera_mode = "upload"
+        elif camera_mode:
+            st.session_state.camera_mode = "camera"
+        
+        # Mostrar advertencia para cámara en entornos desplegados
+        if not is_local and st.session_state.camera_mode == "camera":
+            st.warning("""
+            ⚠️ **Funcionalidad de cámara limitada en aplicaciones desplegadas**
             
-            # Botón para iniciar/detener la cámara
-            col1, col2 = st.columns([1, 4])
+            La captura directa de cámara puede no funcionar en algunos entornos de despliegue.
+            Se recomienda usar el modo "Subir Imagen" para mayor compatibilidad.
+            """)
+            st.session_state.camera_mode = "upload"
+        
+        st.markdown("---")
+        
+        # Modo subir imagen
+        if st.session_state.camera_mode == "upload":
+            st.subheader("📁 Subir Imagen para Reconocimiento")
+            
+            uploaded_image = st.file_uploader(
+                "Selecciona una imagen",
+                type=['jpg', 'jpeg', 'png', 'bmp'],
+                help="Formatos soportados: JPG, JPEG, PNG, BMP"
+            )
+            
+            if uploaded_image is not None:
+                try:
+                    # Cargar imagen
+                    image = Image.open(uploaded_image)
+                    
+                    # Mostrar imagen original
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("📷 Imagen Original")
+                        st.image(image, use_container_width=True)
+                    
+                    # Procesar imagen
+                    with st.spinner("Procesando imagen..."):
+                        result_image, faces_info = st.session_state.face_system.process_image_for_recognition(image)
+                    
+                    with col2:
+                        st.subheader("🔍 Resultado del Reconocimiento")
+                        if result_image is not None:
+                            st.image(result_image, use_container_width=True)
+                        else:
+                            st.error("Error procesando la imagen")
+                    
+                    # Mostrar resultados detallados
+                    if faces_info:
+                        st.subheader("📊 Resultados Detallados")
+                        for i, face in enumerate(faces_info, 1):
+                            status = "✅ Reconocido" if face['similarity'] > 60 else "❓ Desconocido"
+                            confidence = "Alta" if face['similarity'] > 80 else "Media" if face['similarity'] > 60 else "Baja"
+                            
+                            with st.expander(f"Rostro {i}: {face['label']} ({status})"):
+                                col_a, col_b, col_c = st.columns(3)
+                                with col_a:
+                                    st.metric("Similitud", f"{face['similarity']}%")
+                                with col_b:
+                                    st.metric("Confianza", confidence)
+                                with col_c:
+                                    st.metric("Detección", f"{face['prob']:.1f}%")
+                    else:
+                        st.info("No se detectaron rostros en la imagen")
+                        
+                except Exception as e:
+                    st.error(f"Error cargando imagen: {str(e)}")
+        
+        # Modo cámara (solo local)
+        elif st.session_state.camera_mode == "camera" and is_local:
+            st.subheader("📸 Captura con Cámara")
+            
+            col1, col2 = st.columns([1, 3])
             
             with col1:
-                camera_enabled = st.checkbox("Activar cámara", value=False)
+                if st.button("📷 Capturar Foto", use_container_width=True):
+                    with st.spinner("Capturando imagen..."):
+                        frame, error = capture_camera_frame()
+                        
+                        if frame is not None:
+                            st.session_state.captured_frame = frame
+                            st.success("¡Imagen capturada!")
+                        else:
+                            st.error(f"Error: {error}")
+                            st.info("""
+                            **Posibles soluciones:**
+                            - Verifica que tu cámara esté conectada
+                            - Cierra otras aplicaciones que usen la cámara
+                            - Reinicia la aplicación
+                            """)
             
-            if camera_enabled:
-                ctx = webrtc_streamer(
-                    key="face-recognition",
-                    mode=WebRtcMode.SENDRECV,
-                    rtc_configuration=get_rtc_config_free(),
-                    video_processor_factory=lambda: video_processor,
-                    media_stream_constraints={
-                        "video": {
-                            "width": {"min": 640, "ideal": 1280},
-                            "height": {"min": 480, "ideal": 720},
-                            "frameRate": {"min": 15, "ideal": 30}
-                        }, 
-                        "audio": False
-                    },
-                    async_processing=True,
-                )
+            # Mostrar imagen capturada y procesarla
+            if 'captured_frame' in st.session_state:
+                col_a, col_b = st.columns(2)
                 
-                # Mostrar estado de conexión
-                if ctx.state.playing:
-                    st.success("🟢 Cámara activa")
-                elif ctx.state.signalling:
-                    st.info("🟡 Conectando...")
-                else:
-                    st.error("🔴 Cámara desconectada")
+                with col_a:
+                    st.subheader("📷 Imagen Capturada")
+                    # Convertir BGR a RGB para mostrar
+                    frame_rgb = cv2.cvtColor(st.session_state.captured_frame, cv2.COLOR_BGR2RGB)
+                    st.image(frame_rgb, use_container_width=True)
                 
-                # Mostrar resultados
-                if ctx.state.playing and video_processor.last_results:
-                    st.subheader("📊 Resultados en Tiempo Real")
-                    for i, face in enumerate(video_processor.last_results, 1):
+                with col_b:
+                    st.subheader("🔍 Resultado del Reconocimiento")
+                    with st.spinner("Analizando rostros..."):
+                        faces_info = st.session_state.face_system.recognize_faces_in_frame(
+                            st.session_state.captured_frame
+                        )
+                        
+                        if faces_info:
+                            result_frame = st.session_state.face_system.draw_face_info(
+                                st.session_state.captured_frame.copy(), faces_info
+                            )
+                            result_frame_rgb = cv2.cvtColor(result_frame, cv2.COLOR_BGR2RGB)
+                            st.image(result_frame_rgb, use_container_width=True)
+                        else:
+                            st.image(frame_rgb, use_container_width=True)
+                            st.info("No se detectaron rostros")
+                
+                # Resultados detallados
+                if faces_info:
+                    st.subheader("📊 Resultados de la Captura")
+                    for i, face in enumerate(faces_info, 1):
                         status = "✅" if face['similarity'] > 60 else "❓"
-                        st.write(f"{status} **{face['label']}** - Similitud: {face['similarity']}%")
-                
-                # Información de troubleshooting
-                with st.expander("🔧 Solución de problemas"):
-                    st.write("""
-                    **Si la cámara no funciona:**
-                    1. Asegúrate de que tu navegador tenga permisos para acceder a la cámara
-                    2. Verifica que estés usando HTTPS (requerido para cámara)
-                    3. Prueba con un navegador diferente (Chrome suele funcionar mejor)
-                    4. Revisa si hay otras aplicaciones usando la cámara
-                    5. En entornos desplegados, algunos servicios pueden limitar WebRTC
-                    
-                    **Plataformas recomendadas para despliegue:**
-                    - Streamlit Cloud (con configuración adecuada)
-                    - Heroku (con buildpacks apropiados)  
-                    - Railway
-                    - Render
-                    """)
-            else:
-                st.info("Activa la casilla de 'Activar cámara' para comenzar")
-                
-        except Exception as e:
-            st.error(f"Error al inicializar la cámara: {str(e)}")
-            st.write("Esto puede suceder si:")
-            st.write("- No tienes permisos de cámara")
-            st.write("- La aplicación no está en HTTPS")
-            st.write("- El servicio de hosting no soporta WebRTC")
+                        st.write(f"{status} **{face['label']}** - Similitud: {face['similarity']}% - Detección: {face['prob']:.1f}%")
+    
     else:
-        st.warning("⚠️ Carga un diccionario .pkl para habilitar la cámara")
+        st.warning("⚠️ Carga un diccionario .pkl primero para habilitar las funciones de reconocimiento")
         
-        
+        # Mostrar ejemplo de cómo usar
+        with st.expander("📖 Cómo usar esta aplicación"):
+            st.write("""
+            **Pasos para usar el sistema:**
+            
+            1. **Cargar Diccionario**: Sube un archivo .pkl con las características faciales entrenadas
+            2. **Seleccionar Modo**: Elige entre subir imagen o usar cámara (solo local)
+            3. **Analizar**: La aplicación detectará y reconocerá rostros automáticamente
+            
+            **Formatos soportados:**
+            - Diccionario: archivos .pkl
+            - Imágenes: JPG, JPEG, PNG, BMP
+            
+            **Nota**: La funcionalidad de cámara solo está disponible en entornos locales por limitaciones de seguridad del navegador.
+            """)
+
+
 if __name__ == "__main__":
     main()
