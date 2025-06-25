@@ -9,6 +9,8 @@ import platform
 import tempfile
 import numpy as np
 import time
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+import av
 
 class FaceRecognitionSystem:
     def __init__(self, caracteristicas_dict=None):
@@ -209,8 +211,36 @@ class FaceRecognitionSystem:
             return None, []
 
 
+# Clase para el procesamiento de video en tiempo real
+class VideoProcessor:
+    def __init__(self, face_system):
+        self.face_system = face_system
+        self.last_capture = None
+        self.capture_flag = False
+    
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        
+        # Si hay diccionario cargado, procesar reconocimiento
+        if self.face_system.caracteristicas:
+            faces_info = self.face_system.recognize_faces_in_frame(img)
+            img = self.face_system.draw_face_info(img, faces_info)
+            
+            # Capturar frame si se solicita
+            if self.capture_flag:
+                self.last_capture = img.copy()
+                self.capture_flag = False
+        
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+    
+    def capture_frame(self):
+        self.capture_flag = True
+        time.sleep(0.5)  # Esperar un poco para capturar
+        return self.last_capture if self.last_capture is not None else None
+
+
 def capture_camera_frame():
-    """Capturar un frame de la cámara usando OpenCV"""
+    """Capturar un frame de la cámara usando OpenCV (para uso local)"""
     try:
         # Intentar diferentes índices de cámara
         for camera_index in [0, 1, 2]:
@@ -252,39 +282,36 @@ def main():
         st.session_state.face_system = FaceRecognitionSystem()
         st.session_state.dict_loaded = False
         st.session_state.last_uploaded = None
-        st.session_state.camera_mode = "upload"  # "upload" o "camera"
+        st.session_state.camera_mode = "upload"  # "upload", "camera_local", "camera_web"
 
     # Elementos estáticos
     st.title("🎥 Sistema de Reconocimiento Facial")
     st.markdown("---")
     
-    # Detectar si estamos en desarrollo o producción
-    # Mejor detección del entorno
+    # Detectar entorno
     try:
-        # Si estamos en Streamlit Cloud o similar, estas variables estarán presentes
         is_cloud = any([
             os.getenv('STREAMLIT_SHARING_MODE'),
             os.getenv('STREAMLIT_CLOUD'),
             'streamlit.app' in os.getenv('STREAMLIT_SERVER_ADDRESS', ''),
             'herokuapp.com' in os.getenv('STREAMLIT_SERVER_ADDRESS', ''),
         ])
-        # También verificar si tenemos acceso a la cámara
         is_local = not is_cloud
         
-        # Intentar detectar disponibilidad de cámara
-        camera_available = True
-        try:
-            import cv2
-            cap = cv2.VideoCapture(0)
-            camera_available = cap.isOpened()
-            if cap.isOpened():
-                cap.release()
-        except:
-            camera_available = False
-            
+        # Intentar detectar disponibilidad de cámara local
+        camera_local_available = is_local
+        if is_local:
+            try:
+                cap = cv2.VideoCapture(0)
+                camera_local_available = cap.isOpened()
+                if cap.isOpened():
+                    cap.release()
+            except:
+                camera_local_available = False
+                
     except:
         is_local = True
-        camera_available = True
+        camera_local_available = True
     
     # Sidebar para configuración
     with st.sidebar:
@@ -296,7 +323,7 @@ def main():
         st.write(f"**Dispositivo:** {st.session_state.face_system.device}")
         st.write(f"**OpenCV:** {cv2.__version__}")
         st.write(f"**Entorno:** {'Local' if is_local else 'Cloud/Desplegado'}")
-        st.write(f"**Cámara disponible:** {'Sí' if camera_available else 'No'}")
+        st.write(f"**Cámara local:** {'Sí' if camera_local_available else 'No'}")
         
         # Cargar diccionario .pkl
         st.subheader("📁 Cargar Diccionario")
@@ -346,32 +373,31 @@ def main():
         # Selector de modo
         st.subheader("📷 Modo de Captura")
         
-        mode_col1, mode_col2 = st.columns(2)
-        with mode_col1:
-            upload_mode = st.button("📁 Subir Imagen", use_container_width=True)
-        with mode_col2:
-            camera_mode = st.button("📸 Usar Cámara", use_container_width=True, 
-                                  disabled=not camera_available,
-                                  help="Cámara no disponible en este entorno" if not camera_available else "Capturar foto con cámara")
+        # Crear columnas para los botones
+        if is_local and camera_local_available:
+            col1, col2, col3 = st.columns(3)
+        else:
+            col1, col2 = st.columns(2)
         
+        with col1:
+            upload_mode = st.button("📁 Subir Imagen", use_container_width=True)
+        
+        with col2:
+            camera_web_mode = st.button("🌐 Cámara Web", use_container_width=True,
+                                      help="Cámara web que funciona en cualquier entorno")
+        
+        if is_local and camera_local_available:
+            with col3:
+                camera_local_mode = st.button("📸 Cámara Local", use_container_width=True,
+                                            help="Captura directa con OpenCV (solo local)")
+        
+        # Actualizar modo según botón presionado
         if upload_mode:
             st.session_state.camera_mode = "upload"
-        elif camera_mode:
-            st.session_state.camera_mode = "camera"
-        
-        # Mostrar información sobre disponibilidad de cámara
-        if not camera_available:
-            st.info("""
-            📷 **Información sobre la cámara:**
-            
-            La cámara no está disponible en este entorno. Esto puede deberse a:
-            - Restricciones del servicio de hosting
-            - Falta de permisos de cámara
-            - Cámara en uso por otra aplicación
-            
-            💡 **Recomendación**: Usa el modo "Subir Imagen" que funciona en todos los entornos.
-            """)
-            st.session_state.camera_mode = "upload"
+        elif camera_web_mode:
+            st.session_state.camera_mode = "camera_web"
+        elif is_local and camera_local_available and 'camera_local_mode' in locals() and camera_local_mode:
+            st.session_state.camera_mode = "camera_local"
         
         st.markdown("---")
         
@@ -429,9 +455,79 @@ def main():
                 except Exception as e:
                     st.error(f"Error cargando imagen: {str(e)}")
         
-        # Modo cámara (si está disponible)
-        elif st.session_state.camera_mode == "camera" and camera_available:
-            st.subheader("📸 Captura con Cámara")
+        # Modo cámara web (funciona en cualquier entorno)
+        elif st.session_state.camera_mode == "camera_web":
+            st.subheader("🌐 Cámara Web en Tiempo Real")
+            
+            # Configuración WebRTC
+            RTC_CONFIGURATION = RTCConfiguration({
+                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+            })
+            
+            # Inicializar procesador de video
+            if 'video_processor' not in st.session_state:
+                st.session_state.video_processor = VideoProcessor(st.session_state.face_system)
+            
+            # Streamlit WebRTC
+            webrtc_ctx = webrtc_streamer(
+                key="face-recognition",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration=RTC_CONFIGURATION,
+                video_processor_factory=lambda: st.session_state.video_processor,
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
+            )
+            
+            if webrtc_ctx.video_processor:
+                st.info("✅ Cámara web conectada. Los rostros se reconocen en tiempo real.")
+                
+                # Botón para capturar frame
+                if st.button("📸 Capturar Frame Actual"):
+                    captured_frame = st.session_state.video_processor.capture_frame()
+                    if captured_frame is not None:
+                        st.session_state.web_captured_frame = captured_frame
+                        st.success("¡Frame capturado!")
+                
+                # Mostrar frame capturado y análisis
+                if 'web_captured_frame' in st.session_state:
+                    st.subheader("📷 Frame Capturado")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write("**Imagen Capturada:**")
+                        # Convertir BGR a RGB para mostrar
+                        frame_rgb = cv2.cvtColor(st.session_state.web_captured_frame, cv2.COLOR_BGR2RGB)
+                        st.image(frame_rgb, use_container_width=True)
+                    
+                    with col2:
+                        st.write("**Análisis de Rostros:**")
+                        faces_info = st.session_state.face_system.recognize_faces_in_frame(
+                            st.session_state.web_captured_frame
+                        )
+                        
+                        if faces_info:
+                            for i, face in enumerate(faces_info, 1):
+                                status = "✅" if face['similarity'] > 60 else "❓"
+                                st.write(f"{status} **{face['label']}**")
+                                st.write(f"   Similitud: {face['similarity']}%")
+                                st.write(f"   Detección: {face['prob']:.1f}%")
+                                st.write("---")
+                        else:
+                            st.info("No se detectaron rostros en el frame")
+            else:
+                st.warning("⚠️ Conectando con la cámara web...")
+                st.info("""
+                **Para usar la cámara web:**
+                1. Permite el acceso a la cámara cuando el navegador lo solicite
+                2. Espera a que aparezca el video
+                3. Los rostros se reconocerán automáticamente
+                4. Usa 'Capturar Frame' para analizar un momento específico
+                """)
+        
+        # Modo cámara local (solo en entorno local)
+        elif st.session_state.camera_mode == "camera_local" and is_local and camera_local_available:
+            st.subheader("📸 Captura con Cámara Local")
             
             col1, col2 = st.columns([1, 3])
             
@@ -495,14 +591,19 @@ def main():
             **Pasos para usar el sistema:**
             
             1. **Cargar Diccionario**: Sube un archivo .pkl con las características faciales entrenadas
-            2. **Seleccionar Modo**: Elige entre subir imagen o usar cámara (solo local)
+            2. **Seleccionar Modo**: 
+               - **Subir Imagen**: Sube una foto desde tu dispositivo
+               - **Cámara Web**: Usa la cámara en tiempo real (funciona en cualquier entorno)
+               - **Cámara Local**: Captura directa con OpenCV (solo local)
             3. **Analizar**: La aplicación detectará y reconocerá rostros automáticamente
             
             **Formatos soportados:**
             - Diccionario: archivos .pkl
             - Imágenes: JPG, JPEG, PNG, BMP
             
-            **Nota**: La funcionalidad de cámara solo está disponible en entornos locales por limitaciones de seguridad del navegador.
+            **Modos de cámara:**
+            - **Cámara Web**: Reconocimiento en tiempo real usando WebRTC, funciona en todos los entornos
+            - **Cámara Local**: Captura directa, solo disponible cuando se ejecuta localmente
             """)
 
 
