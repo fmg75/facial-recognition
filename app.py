@@ -212,23 +212,32 @@ class FaceRecognitionSystem:
 def capture_camera_frame():
     """Capturar un frame de la cámara usando OpenCV"""
     try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            return None, "No se pudo acceder a la cámara"
+        # Intentar diferentes índices de cámara
+        for camera_index in [0, 1, 2]:
+            cap = cv2.VideoCapture(camera_index)
+            if cap.isOpened():
+                break
+        else:
+            return None, "No se encontró ninguna cámara disponible"
         
         # Configurar resolución
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         
-        ret, frame = cap.read()
+        # Intentar capturar algunos frames para estabilizar la cámara
+        for _ in range(5):
+            ret, frame = cap.read()
+            if not ret:
+                break
+        
         cap.release()
         
-        if ret:
+        if ret and frame is not None:
             return frame, None
         else:
-            return None, "No se pudo capturar el frame"
+            return None, "No se pudo capturar el frame de la cámara"
     except Exception as e:
-        return None, f"Error capturando frame: {str(e)}"
+        return None, f"Error accediendo a la cámara: {str(e)}"
 
 
 def main():
@@ -250,7 +259,32 @@ def main():
     st.markdown("---")
     
     # Detectar si estamos en desarrollo o producción
-    is_local = st.get_option("server.headless") is False
+    # Mejor detección del entorno
+    try:
+        # Si estamos en Streamlit Cloud o similar, estas variables estarán presentes
+        is_cloud = any([
+            os.getenv('STREAMLIT_SHARING_MODE'),
+            os.getenv('STREAMLIT_CLOUD'),
+            'streamlit.app' in os.getenv('STREAMLIT_SERVER_ADDRESS', ''),
+            'herokuapp.com' in os.getenv('STREAMLIT_SERVER_ADDRESS', ''),
+        ])
+        # También verificar si tenemos acceso a la cámara
+        is_local = not is_cloud
+        
+        # Intentar detectar disponibilidad de cámara
+        camera_available = True
+        try:
+            import cv2
+            cap = cv2.VideoCapture(0)
+            camera_available = cap.isOpened()
+            if cap.isOpened():
+                cap.release()
+        except:
+            camera_available = False
+            
+    except:
+        is_local = True
+        camera_available = True
     
     # Sidebar para configuración
     with st.sidebar:
@@ -261,7 +295,8 @@ def main():
         st.write(f"**SO:** {platform.system()}")
         st.write(f"**Dispositivo:** {st.session_state.face_system.device}")
         st.write(f"**OpenCV:** {cv2.__version__}")
-        st.write(f"**Entorno:** {'Local' if is_local else 'Desplegado'}")
+        st.write(f"**Entorno:** {'Local' if is_local else 'Cloud/Desplegado'}")
+        st.write(f"**Cámara disponible:** {'Sí' if camera_available else 'No'}")
         
         # Cargar diccionario .pkl
         st.subheader("📁 Cargar Diccionario")
@@ -316,21 +351,25 @@ def main():
             upload_mode = st.button("📁 Subir Imagen", use_container_width=True)
         with mode_col2:
             camera_mode = st.button("📸 Usar Cámara", use_container_width=True, 
-                                  disabled=not is_local,
-                                  help="Solo disponible en entorno local" if not is_local else "")
+                                  disabled=not camera_available,
+                                  help="Cámara no disponible en este entorno" if not camera_available else "Capturar foto con cámara")
         
         if upload_mode:
             st.session_state.camera_mode = "upload"
         elif camera_mode:
             st.session_state.camera_mode = "camera"
         
-        # Mostrar advertencia para cámara en entornos desplegados
-        if not is_local and st.session_state.camera_mode == "camera":
-            st.warning("""
-            ⚠️ **Funcionalidad de cámara limitada en aplicaciones desplegadas**
+        # Mostrar información sobre disponibilidad de cámara
+        if not camera_available:
+            st.info("""
+            📷 **Información sobre la cámara:**
             
-            La captura directa de cámara puede no funcionar en algunos entornos de despliegue.
-            Se recomienda usar el modo "Subir Imagen" para mayor compatibilidad.
+            La cámara no está disponible en este entorno. Esto puede deberse a:
+            - Restricciones del servicio de hosting
+            - Falta de permisos de cámara
+            - Cámara en uso por otra aplicación
+            
+            💡 **Recomendación**: Usa el modo "Subir Imagen" que funciona en todos los entornos.
             """)
             st.session_state.camera_mode = "upload"
         
@@ -390,8 +429,8 @@ def main():
                 except Exception as e:
                     st.error(f"Error cargando imagen: {str(e)}")
         
-        # Modo cámara (solo local)
-        elif st.session_state.camera_mode == "camera" and is_local:
+        # Modo cámara (si está disponible)
+        elif st.session_state.camera_mode == "camera" and camera_available:
             st.subheader("📸 Captura con Cámara")
             
             col1, col2 = st.columns([1, 3])
