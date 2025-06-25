@@ -128,7 +128,7 @@ dmypy.json
 # Specific to this project
 capturas_reconocimiento/
 set_test/
-set_changes/
+set_changos/
 *.pkl
 !feature_dict.pkl
 
