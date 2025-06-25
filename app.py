@@ -211,7 +211,6 @@ class FaceRecognitionSystem:
             return None, []
 
 
-# Clase para el procesamiento de video en tiempo real
 class VideoProcessor:
     def __init__(self, face_system):
         self.face_system = face_system
@@ -282,7 +281,9 @@ def main():
         st.session_state.face_system = FaceRecognitionSystem()
         st.session_state.dict_loaded = False
         st.session_state.last_uploaded = None
-        st.session_state.camera_mode = "upload"  # "upload", "camera_local", "camera_web"
+        st.session_state.camera_mode = "upload"
+        # Inicializar video_processor aquí para evitar el AttributeError
+        st.session_state.video_processor = VideoProcessor(st.session_state.face_system)
 
     # Elementos estáticos
     st.title("🎥 Sistema de Reconocimiento Facial")
@@ -345,6 +346,8 @@ def main():
                     if success:
                         st.success(message)
                         st.session_state.dict_loaded = True
+                        # Actualizar referencia en video_processor
+                        st.session_state.video_processor.face_system = st.session_state.face_system
                     else:
                         st.error(message)
                         st.session_state.dict_loaded = False
@@ -464,11 +467,7 @@ def main():
                 "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
             })
             
-            # Inicializar procesador de video
-            if 'video_processor' not in st.session_state:
-                st.session_state.video_processor = VideoProcessor(st.session_state.face_system)
-            
-            # Streamlit WebRTC
+            # Streamlit WebRTC - usa el video_processor ya inicializado
             webrtc_ctx = webrtc_streamer(
                 key="face-recognition",
                 mode=WebRtcMode.SENDRECV,
