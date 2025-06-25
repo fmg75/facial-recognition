@@ -8,7 +8,6 @@ from facenet_pytorch import MTCNN, InceptionResnetV1
 import platform
 import tempfile
 import numpy as np
-import time
 
 class FaceRecognitionSystem:
     def __init__(self, caracteristicas_dict=None):
@@ -208,38 +207,6 @@ class FaceRecognitionSystem:
             st.error(f"Error procesando imagen: {str(e)}")
             return None, []
 
-
-def capture_camera_frame():
-    """Capturar un frame de la cámara usando OpenCV (para uso local)"""
-    try:
-        # Intentar diferentes índices de cámara
-        for camera_index in [0, 1, 2]:
-            cap = cv2.VideoCapture(camera_index)
-            if cap.isOpened():
-                break
-        else:
-            return None, "No se encontró ninguna cámara disponible"
-        
-        # Configurar resolución
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
-        # Intentar capturar algunos frames para estabilizar la cámara
-        for _ in range(5):
-            ret, frame = cap.read()
-            if not ret:
-                break
-        
-        cap.release()
-        
-        if ret and frame is not None:
-            return frame, None
-        else:
-            return None, "No se pudo capturar el frame de la cámara"
-    except Exception as e:
-        return None, f"Error accediendo a la cámara: {str(e)}"
-
-
 def main():
     st.set_page_config(
         page_title="Reconocimiento Facial",
@@ -252,36 +219,10 @@ def main():
         st.session_state.face_system = FaceRecognitionSystem()
         st.session_state.dict_loaded = False
         st.session_state.last_uploaded = None
-        st.session_state.camera_mode = "upload"
 
     # Elementos estáticos
     st.title("🎥 Sistema de Reconocimiento Facial")
     st.markdown("---")
-    
-    # Detectar entorno
-    try:
-        is_cloud = any([
-            os.getenv('STREAMLIT_SHARING_MODE'),
-            os.getenv('STREAMLIT_CLOUD'),
-            'streamlit.app' in os.getenv('STREAMLIT_SERVER_ADDRESS', ''),
-            'herokuapp.com' in os.getenv('STREAMLIT_SERVER_ADDRESS', ''),
-        ])
-        is_local = not is_cloud
-        
-        # Intentar detectar disponibilidad de cámara local
-        camera_local_available = is_local
-        if is_local:
-            try:
-                cap = cv2.VideoCapture(0)
-                camera_local_available = cap.isOpened()
-                if cap.isOpened():
-                    cap.release()
-            except:
-                camera_local_available = False
-                
-    except:
-        is_local = True
-        camera_local_available = True
     
     # Sidebar para configuración
     with st.sidebar:
@@ -292,8 +233,6 @@ def main():
         st.write(f"**SO:** {platform.system()}")
         st.write(f"**Dispositivo:** {st.session_state.face_system.device}")
         st.write(f"**OpenCV:** {cv2.__version__}")
-        st.write(f"**Entorno:** {'Local' if is_local else 'Cloud/Desplegado'}")
-        st.write(f"**Cámara local:** {'Sí' if camera_local_available else 'No'}")
         
         # Cargar diccionario .pkl
         st.subheader("📁 Cargar Diccionario")
@@ -340,218 +279,32 @@ def main():
     
     # Solo mostrar si hay diccionario cargado
     if st.session_state.face_system.caracteristicas:
-        # Selector de modo
-        st.subheader("📷 Modo de Captura")
+        st.subheader("📷 Cámara en Vivo")
         
-        # Crear columnas para los botones
-        if is_local and camera_local_available:
-            col1, col2, col3 = st.columns(3)
-        else:
-            col1, col2 = st.columns(2)
+        # Mostrar el widget de la cámara
+        img_file_buffer = st.camera_input("Toma una foto para reconocimiento facial")
         
-        with col1:
-            upload_mode = st.button("📁 Subir Imagen", use_container_width=True)
-        
-        with col2:
-            camera_stream_mode = st.button("📷 Cámara en Vivo", use_container_width=True,
-                                      help="Usa la cámara del dispositivo")
-        
-        if is_local and camera_local_available:
-            with col3:
-                camera_local_mode = st.button("📸 Cámara Local", use_container_width=True,
-                                            help="Captura directa con OpenCV (solo local)")
-        
-        # Actualizar modo según botón presionado
-        if upload_mode:
-            st.session_state.camera_mode = "upload"
-        elif camera_stream_mode:
-            st.session_state.camera_mode = "camera_stream"
-        elif is_local and camera_local_available and 'camera_local_mode' in locals() and camera_local_mode:
-            st.session_state.camera_mode = "camera_local"
-        
-        st.markdown("---")
-        
-        # Modo subir imagen
-        if st.session_state.camera_mode == "upload":
-            st.subheader("📁 Subir Imagen para Reconocimiento")
+        if img_file_buffer is not None:
+            # Convertir la imagen capturada a formato PIL
+            image = Image.open(img_file_buffer)
             
-            uploaded_image = st.file_uploader(
-                "Selecciona una imagen",
-                type=['jpg', 'jpeg', 'png', 'bmp'],
-                help="Formatos soportados: JPG, JPEG, PNG, BMP"
-            )
+            # Procesar imagen
+            with st.spinner("Procesando imagen..."):
+                result_image, faces_info = st.session_state.face_system.process_image_for_recognition(image)
             
-            if uploaded_image is not None:
-                try:
-                    # Cargar imagen
-                    image = Image.open(uploaded_image)
-                    
-                    # Mostrar imagen original
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.subheader("📷 Imagen Original")
-                        st.image(image, use_container_width=True)
-                    
-                    # Procesar imagen
-                    with st.spinner("Procesando imagen..."):
-                        result_image, faces_info = st.session_state.face_system.process_image_for_recognition(image)
-                    
-                    with col2:
-                        st.subheader("🔍 Resultado del Reconocimiento")
-                        if result_image is not None:
-                            st.image(result_image, use_container_width=True)
-                        else:
-                            st.error("Error procesando la imagen")
-                    
-                    # Mostrar resultados detallados
-                    if faces_info:
-                        st.subheader("📊 Resultados Detallados")
-                        for i, face in enumerate(faces_info, 1):
-                            status = "✅ Reconocido" if face['similarity'] > 60 else "❓ Desconocido"
-                            confidence = "Alta" if face['similarity'] > 80 else "Media" if face['similarity'] > 60 else "Baja"
-                            
-                            with st.expander(f"Rostro {i}: {face['label']} ({status})"):
-                                col_a, col_b, col_c = st.columns(3)
-                                with col_a:
-                                    st.metric("Similitud", f"{face['similarity']}%")
-                                with col_b:
-                                    st.metric("Confianza", confidence)
-                                with col_c:
-                                    st.metric("Detección", f"{face['prob']:.1f}%")
-                    else:
-                        st.info("No se detectaron rostros en la imagen")
-                        
-                except Exception as e:
-                    st.error(f"Error cargando imagen: {str(e)}")
-        
-        # Modo cámara en vivo usando st.camera_input
-        elif st.session_state.camera_mode == "camera_stream":
-            st.subheader("📷 Cámara en Vivo")
+            # Mostrar solo el resultado del reconocimiento
+            st.subheader("🔍 Resultado del Reconocimiento")
+            if result_image is not None:
+                st.image(result_image, use_container_width=True)
+            else:
+                st.error("Error procesando la imagen")
             
-            # Mostrar el widget de la cámara
-            img_file_buffer = st.camera_input("Toma una foto para reconocimiento facial")
-            
-            if img_file_buffer is not None:
-                # Convertir la imagen capturada a formato PIL
-                image = Image.open(img_file_buffer)
-                
-                # Mostrar imagen original y procesada
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("📷 Imagen Capturada")
-                    st.image(image, use_container_width=True)
-                
-                with col2:
-                    st.subheader("🔍 Resultado del Reconocimiento")
-                    with st.spinner("Procesando imagen..."):
-                        result_image, faces_info = st.session_state.face_system.process_image_for_recognition(image)
-                    
-                    if result_image is not None:
-                        st.image(result_image, use_container_width=True)
-                    else:
-                        st.error("Error procesando la imagen")
-                
-                # Mostrar resultados detallados
-                if faces_info:
-                    st.subheader("📊 Resultados Detallados")
-                    for i, face in enumerate(faces_info, 1):
-                        status = "✅ Reconocido" if face['similarity'] > 60 else "❓ Desconocido"
-                        confidence = "Alta" if face['similarity'] > 80 else "Media" if face['similarity'] > 60 else "Baja"
-                        
-                        with st.expander(f"Rostro {i}: {face['label']} ({status})"):
-                            col_a, col_b, col_c = st.columns(3)
-                            with col_a:
-                                st.metric("Similitud", f"{face['similarity']}%")
-                            with col_b:
-                                st.metric("Confianza", confidence)
-                            with col_c:
-                                st.metric("Detección", f"{face['prob']:.1f}%")
-                else:
-                    st.info("No se detectaron rostros en la imagen")
-        
-        # Modo cámara local (solo en entorno local)
-        elif st.session_state.camera_mode == "camera_local" and is_local and camera_local_available:
-            st.subheader("📸 Captura con Cámara Local")
-            
-            col1, col2 = st.columns([1, 3])
-            
-            with col1:
-                if st.button("📷 Capturar Foto", use_container_width=True):
-                    with st.spinner("Capturando imagen..."):
-                        frame, error = capture_camera_frame()
-                        
-                        if frame is not None:
-                            st.session_state.captured_frame = frame
-                            st.success("¡Imagen capturada!")
-                        else:
-                            st.error(f"Error: {error}")
-                            st.info("""
-                            **Posibles soluciones:**
-                            - Verifica que tu cámara esté conectada
-                            - Cierra otras aplicaciones que usen la cámara
-                            - Reinicia la aplicación
-                            """)
-            
-            # Mostrar imagen capturada y procesarla
-            if 'captured_frame' in st.session_state:
-                col_a, col_b = st.columns(2)
-                
-                with col_a:
-                    st.subheader("📷 Imagen Capturada")
-                    # Convertir BGR a RGB para mostrar
-                    frame_rgb = cv2.cvtColor(st.session_state.captured_frame, cv2.COLOR_BGR2RGB)
-                    st.image(frame_rgb, use_container_width=True)
-                
-                with col_b:
-                    st.subheader("🔍 Resultado del Reconocimiento")
-                    with st.spinner("Analizando rostros..."):
-                        faces_info = st.session_state.face_system.recognize_faces_in_frame(
-                            st.session_state.captured_frame
-                        )
-                        
-                        if faces_info:
-                            result_frame = st.session_state.face_system.draw_face_info(
-                                st.session_state.captured_frame.copy(), faces_info
-                            )
-                            result_frame_rgb = cv2.cvtColor(result_frame, cv2.COLOR_BGR2RGB)
-                            st.image(result_frame_rgb, use_container_width=True)
-                        else:
-                            st.image(frame_rgb, use_container_width=True)
-                            st.info("No se detectaron rostros")
-                
-                # Resultados detallados
-                if faces_info:
-                    st.subheader("📊 Resultados de la Captura")
-                    for i, face in enumerate(faces_info, 1):
-                        status = "✅" if face['similarity'] > 60 else "❓"
-                        st.write(f"{status} **{face['label']}** - Similitud: {face['similarity']}% - Detección: {face['prob']:.1f}%")
+            # Mostrar mensaje simple si no se detectaron rostros
+            if not faces_info:
+                st.info("No se detectaron rostros en la imagen")
     
     else:
         st.warning("⚠️ Carga un diccionario .pkl primero para habilitar las funciones de reconocimiento")
-        
-        # Mostrar ejemplo de cómo usar
-        with st.expander("📖 Cómo usar esta aplicación"):
-            st.write("""
-            **Pasos para usar el sistema:**
-            
-            1. **Cargar Diccionario**: Sube un archivo .pkl con las características faciales entrenadas
-            2. **Seleccionar Modo**: 
-               - **Subir Imagen**: Sube una foto desde tu dispositivo
-               - **Cámara en Vivo**: Usa la cámara del dispositivo para tomar fotos
-               - **Cámara Local**: Captura directa con OpenCV (solo local)
-            3. **Analizar**: La aplicación detectará y reconocerá rostros automáticamente
-            
-            **Formatos soportados:**
-            - Diccionario: archivos .pkl
-            - Imágenes: JPG, JPEG, PNG, BMP
-            
-            **Modos de cámara:**
-            - **Cámara en Vivo**: Funciona en todos los entornos usando la cámara del dispositivo
-            - **Cámara Local**: Solo disponible cuando se ejecuta localmente
-            """)
-
 
 if __name__ == "__main__":
     main()
