@@ -204,19 +204,39 @@ class VideoProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # Función para obtener configuración RTC mejorada
-def get_rtc_config():
-    """Configuración RTC optimizada para despliegue"""
+def get_rtc_config_free():
+    """Configuración con servidores gratuitos más estables"""
     return RTCConfiguration({
         "iceServers": [
+            # Servidores STUN gratuitos más confiables
             {"urls": ["stun:stun.l.google.com:19302"]},
             {"urls": ["stun:stun1.l.google.com:19302"]},
             {"urls": ["stun:stun2.l.google.com:19302"]},
             {"urls": ["stun:stun3.l.google.com:19302"]},
             {"urls": ["stun:stun4.l.google.com:19302"]},
+            {"urls": ["stun:openrelay.metered.ca:80"]},
+            {"urls": ["stun:relay.metered.ca:80"]},
+            # Agregar servidores TURN gratuitos (limitados)
+            {
+                "urls": ["turn:openrelay.metered.ca:80"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject"
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443"],
+                "username": "openrelayproject", 
+                "credential": "openrelayproject"
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject"
+            }
         ],
         "iceTransportPolicy": "all",
         "bundlePolicy": "balanced",
         "rtcpMuxPolicy": "require",
+        "iceCandidatePoolSize": 10
     })
 
 def main():
@@ -323,7 +343,7 @@ def main():
                 ctx = webrtc_streamer(
                     key="face-recognition",
                     mode=WebRtcMode.SENDRECV,
-                    rtc_configuration=get_rtc_config(),
+                    rtc_configuration=get_rtc_config_free(),
                     video_processor_factory=lambda: video_processor,
                     media_stream_constraints={
                         "video": {
