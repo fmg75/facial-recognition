@@ -1,0 +1,18 @@
+# Core dependencies
+streamlit>=1.28.0
+opencv-python-headless>=4.8.0
+torch>=2.0.0
+torchvision>=0.15.0
+facenet-pytorch>=2.5.3
+Pillow>=9.5.0
+numpy>=1.24.0
+
+# Additional utilities
+datetime
+
+# Optional: For better performance on some systems
+# opencv-contrib-python-headless>=4.8.0
+
+# Note: Some dependencies might need system-level packages
+# For Ubuntu/Debian: sudo apt-get install libgl1-mesa-glx libglib2.0-0
+# For CentOS/RHEL: sudo yum install mesa-libGL glib2
