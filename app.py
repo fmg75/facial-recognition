@@ -9,6 +9,7 @@ import platform
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase, RTCConfiguration
 import av
 import tempfile
+import numpy as np
 
 class FaceRecognitionSystem:
     def __init__(self, caracteristicas_dict=None):
@@ -202,6 +203,22 @@ class VideoProcessor(VideoProcessorBase):
         self.frame_count += 1
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
+# Función para obtener configuración RTC mejorada
+def get_rtc_config():
+    """Configuración RTC optimizada para despliegue"""
+    return RTCConfiguration({
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+            {"urls": ["stun:stun2.l.google.com:19302"]},
+            {"urls": ["stun:stun3.l.google.com:19302"]},
+            {"urls": ["stun:stun4.l.google.com:19302"]},
+        ],
+        "iceTransportPolicy": "all",
+        "bundlePolicy": "balanced",
+        "rtcpMuxPolicy": "require",
+    })
+
 def main():
     st.set_page_config(
         page_title="Reconocimiento Facial en Tiempo Real",
@@ -220,6 +237,9 @@ def main():
     st.title("🎥 Sistema de Reconocimiento Facial")
     st.markdown("---")
     
+    # Detectar si estamos en desarrollo o producción
+    is_local = st.get_option("server.headless") is False
+    
     # Sidebar para configuración
     with st.sidebar:
         st.header("⚙️ Configuración")
@@ -229,6 +249,7 @@ def main():
         st.write(f"**SO:** {platform.system()}")
         st.write(f"**Dispositivo:** {st.session_state.face_system.device}")
         st.write(f"**OpenCV:** {cv2.__version__}")
+        st.write(f"**Entorno:** {'Local' if is_local else 'Desplegado'}")
         
         # Cargar diccionario .pkl
         st.subheader("📁 Cargar Diccionario")
@@ -276,30 +297,88 @@ def main():
     # Área principal
     st.subheader("📷 Cámara en Tiempo Real")
     
+    # Mostrar advertencia para entornos desplegados
+    if not is_local:
+        st.warning("""
+        ⚠️ **Nota importante para aplicaciones desplegadas:**
+        - La funcionalidad de cámara puede tener limitaciones en algunos servicios de hosting
+        - Se requiere HTTPS para acceder a la cámara
+        - Algunos navegadores pueden bloquear el acceso a la cámara en sitios desplegados
+        - Si tienes problemas, prueba con diferentes navegadores o en modo local
+        """)
+    
     # Solo mostrar si hay diccionario cargado
     if st.session_state.face_system.caracteristicas:
-        # Creamos una instancia de VideoProcessor con el sistema facial
-        video_processor = VideoProcessor(st.session_state.face_system)
-        
-        ctx = webrtc_streamer(
-            key="face-recognition",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTCConfiguration(
-                {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-            ),
-            video_processor_factory=lambda: video_processor,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-        )
-        
-        # Mostrar resultados
-        if ctx.state.playing and video_processor.last_results:
-            st.subheader("📊 Resultados en Tiempo Real")
-            for i, face in enumerate(video_processor.last_results, 1):
-                status = "✅" if face['similarity'] > 60 else "❓"
-                st.write(f"{status} **{face['label']}** - Similitud: {face['similarity']}%")
+        try:
+            # Creamos una instancia de VideoProcessor con el sistema facial
+            video_processor = VideoProcessor(st.session_state.face_system)
+            
+            # Botón para iniciar/detener la cámara
+            col1, col2 = st.columns([1, 4])
+            
+            with col1:
+                camera_enabled = st.checkbox("Activar cámara", value=False)
+            
+            if camera_enabled:
+                ctx = webrtc_streamer(
+                    key="face-recognition",
+                    mode=WebRtcMode.SENDRECV,
+                    rtc_configuration=get_rtc_config(),
+                    video_processor_factory=lambda: video_processor,
+                    media_stream_constraints={
+                        "video": {
+                            "width": {"min": 640, "ideal": 1280},
+                            "height": {"min": 480, "ideal": 720},
+                            "frameRate": {"min": 15, "ideal": 30}
+                        }, 
+                        "audio": False
+                    },
+                    async_processing=True,
+                )
+                
+                # Mostrar estado de conexión
+                if ctx.state.playing:
+                    st.success("🟢 Cámara activa")
+                elif ctx.state.signalling:
+                    st.info("🟡 Conectando...")
+                else:
+                    st.error("🔴 Cámara desconectada")
+                
+                # Mostrar resultados
+                if ctx.state.playing and video_processor.last_results:
+                    st.subheader("📊 Resultados en Tiempo Real")
+                    for i, face in enumerate(video_processor.last_results, 1):
+                        status = "✅" if face['similarity'] > 60 else "❓"
+                        st.write(f"{status} **{face['label']}** - Similitud: {face['similarity']}%")
+                
+                # Información de troubleshooting
+                with st.expander("🔧 Solución de problemas"):
+                    st.write("""
+                    **Si la cámara no funciona:**
+                    1. Asegúrate de que tu navegador tenga permisos para acceder a la cámara
+                    2. Verifica que estés usando HTTPS (requerido para cámara)
+                    3. Prueba con un navegador diferente (Chrome suele funcionar mejor)
+                    4. Revisa si hay otras aplicaciones usando la cámara
+                    5. En entornos desplegados, algunos servicios pueden limitar WebRTC
+                    
+                    **Plataformas recomendadas para despliegue:**
+                    - Streamlit Cloud (con configuración adecuada)
+                    - Heroku (con buildpacks apropiados)  
+                    - Railway
+                    - Render
+                    """)
+            else:
+                st.info("Activa la casilla de 'Activar cámara' para comenzar")
+                
+        except Exception as e:
+            st.error(f"Error al inicializar la cámara: {str(e)}")
+            st.write("Esto puede suceder si:")
+            st.write("- No tienes permisos de cámara")
+            st.write("- La aplicación no está en HTTPS")
+            st.write("- El servicio de hosting no soporta WebRTC")
     else:
         st.warning("⚠️ Carga un diccionario .pkl para habilitar la cámara")
-
+        
+        
 if __name__ == "__main__":
     main()
